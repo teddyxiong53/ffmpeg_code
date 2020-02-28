@@ -14,82 +14,85 @@
 #include <libavutil/samplefmt.h>
 #include "mylog.h"
 #include <libswresample/swresample.h>
+#include <libavutil/audio_fifo.h>
 
-static int open_input_file(char *filename, AVFormatContext **input_fmt_ctx, AVCodecContext **input_codec_ctx)
+static int64_t pts;
+
+static int open_input_file(char *filename, AVFormatContext **input_fmt_context, AVCodecContext **input_codec_context)
 {
     int ret;
     AVCodec *codec;
-    AVCodecContext *avctx;
-    ret = avformat_open_input(input_fmt_ctx, filename, NULL, NULL);
+    AVCodecContext *codec_context;
+    ret = avformat_open_input(input_fmt_context, filename, NULL, NULL);
     if(ret) {
         myloge("open input fail");
         return -1;
     }
-    ret = avformat_find_stream_info(*input_fmt_ctx, NULL);
+    ret = avformat_find_stream_info(*input_fmt_context, NULL);
     if(ret) {
         myloge("find stream info fail");
-        avformat_close_input(input_fmt_ctx);
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    if((*input_fmt_ctx)->nb_streams != 1) {
+    if((*input_fmt_context)->nb_streams != 1) {
         myloge("stream number is not 1");
-        avformat_close_input(input_fmt_ctx);
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    codec = avcodec_find_decoder((*input_fmt_ctx)->streams[0]->codecpar->codec_id);
+    codec = avcodec_find_decoder((*input_fmt_context)->streams[0]->codecpar->codec_id);
     if(!codec) {
         myloge("can not find the code in ffmpeg");
-        avformat_close_input(input_fmt_ctx);
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    avctx = avcodec_alloc_context3(codec);
-    if(!avctx) {
-        myloge("alloc codec ctx fail");
-        avformat_close_input(input_fmt_ctx);
+    codec_context = avcodec_alloc_context3(codec);
+    if(!codec_context) {
+        myloge("alloc codec context fail");
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    ret = avcodec_parameters_to_context(avctx, (*input_fmt_ctx)->streams[0]->codecpar);
+    ret = avcodec_parameters_to_context(codec_context, (*input_fmt_context)->streams[0]->codecpar);
     if(ret) {
-        myloge("parameter to ctx fail");
-        avcodec_free_context(&avctx);
-        avformat_close_input(input_fmt_ctx);
+        myloge("parameter to context fail");
+        avcodec_free_context(&codec_context);
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    ret = avcodec_open2(avctx, codec, NULL);
+    ret = avcodec_open2(codec_context, codec, NULL);
     if(ret) {
         myloge("open codec fail");
-        avcodec_free_context(avctx);
-        avformat_close_input(input_fmt_ctx);
+        avcodec_free_context(codec_context);
+        avformat_close_input(input_fmt_context);
         return -1;
     }
-    *input_codec_ctx = avctx;
+    *input_codec_context = codec_context;
 
     mylogd("open input file ok");
     return 0;
 }
 
-static int open_output_file(char *filename, AVCodecContext *input_codec_ctx, AVFormatContext **output_fmt_ctx, AVCodecContext **output_codec_fmt)
+static int open_output_file(char *filename, AVCodecContext *input_codec_context, AVFormatContext **output_fmt_context, AVCodecContext **output_codec_fmt)
 {
     int ret;
-    AVIOContext *io_ctx;
-    ret = avio_open(&io_ctx, filename, AVIO_FLAG_WRITE);
+    AVIOContext *io_context;
+    ret = avio_open(&io_context, filename, AVIO_FLAG_WRITE);
     if(ret) {
         myloge("avio open fail");
         return -1;
     }
-    AVFormatContext *avctx = avformat_alloc_context();
-    if(!avctx) {
-        myloge("alloc output fmt ctx fail");
+    AVFormatContext *format_context = avformat_alloc_context();
+    if(!format_context) {
+        myloge("alloc output fmt context fail");
         goto err0;
     }
-    avctx->pb = io_ctx;
-    avctx->oformat = av_guess_format(NULL, filename, NULL);
-    if(!avctx->oformat) {
+    format_context->pb = io_context;
+    format_context->oformat = av_guess_format(NULL, filename, NULL);
+    if(!format_context->oformat) {
         myloge("find outout format fail");
         goto err1;
     }
-    avctx->url = av_strdup(filename);
-    if(!avctx->url) {
+    format_context->url = av_strdup(filename);
+    if(!format_context->url) {
         myloge("dup filename to url fail");
         goto err1;
     }
@@ -98,29 +101,29 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_ctx, AVF
         myloge("find aac encoder fail");
         goto err1;
     }
-    AVStream *stream = avformat_new_stream(avctx, codec);
+    AVStream *stream = avformat_new_stream(format_context, codec);
     if(!stream) {
         myloge("new stream fail");
         goto err1;
     }
-    AVCodecContext *codec_ctx = avcodec_alloc_context3(codec);
-    if(!codec_ctx) {
-        myloge("alloc avcodec ctx fail");
-        //new出来的stream，会在fmt ctx free的时候被释放。
+    AVCodecContext *codec_context = avcodec_alloc_context3(codec);
+    if(!codec_context) {
+        myloge("alloc avcodec context fail");
+        //new出来的stream，会在fmt context free的时候被释放。
         
         goto err1;
     }
-    codec_ctx->channels = 1;
-    codec_ctx->channel_layout = av_get_default_channel_layout(1);
-    codec_ctx->sample_fmt = codec->sample_fmts[0];
-    mylogd("sample fmt:%d\n", codec_ctx->sample_fmt);
-    codec_ctx->sample_rate = input_codec_ctx->sample_rate;
+    codec_context->channels = 1;
+    codec_context->channel_layout = av_get_default_channel_layout(1);
+    codec_context->sample_fmt = codec->sample_fmts[0];
+    mylogd("sample fmt:%d\n", codec_context->sample_fmt);
+    codec_context->sample_rate = input_codec_context->sample_rate;
     
-    codec_ctx->bit_rate = 32000;
+    codec_context->bit_rate = 32000;
     stream->time_base.den = 16000;
     stream->time_base.num = 1;
 
-    ret = avcodec_open2(codec_ctx, codec, NULL);
+    ret = avcodec_open2(codec_context, codec, NULL);
     if(ret) {
         myloge("open codec fail");
         goto err1;
@@ -131,22 +134,22 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_ctx, AVF
         myloge("parameter fail");
         goto err1;
     }
-    *output_codec_fmt = codec_ctx;
-    *output_fmt_ctx = avctx;
+    *output_codec_fmt = codec_context;
+    *output_fmt_context = format_context;
     return 0;
 err1:
-    avformat_free_context(avctx);
+    avformat_free_context(format_context);
 err0:
-    avio_close(io_ctx);
-    io_ctx = NULL;
+    avio_close(io_context);
+    io_context = NULL;
     return -1;
 }
 
 static int init_resampler(AVCodecContext * input_codec_context, AVCodecContext * output_codec_context, SwrContext * * resample_context)
 {
     int ret;
-    SwrContext *ctx;
-    ctx = swr_alloc_set_opts(NULL, 
+    SwrContext *context;
+    context = swr_alloc_set_opts(NULL, 
         av_get_default_channel_layout(output_codec_context->channels) , 
         output_codec_context->sample_fmt, 
         output_codec_context->sample_rate, 
@@ -154,38 +157,43 @@ static int init_resampler(AVCodecContext * input_codec_context, AVCodecContext *
         input_codec_context->sample_fmt,
         input_codec_context->sample_rate,
         0, NULL);
-   if(!ctx) {
+   if(!context) {
         myloge("alloc swr fail");
         return -1;
    }
-   ret = swr_init(ctx);
+   ret = swr_init(context);
    if(ret < 0) {
         myloge("swr init fail");
-        swr_free(&ctx);
+        swr_free(&context);
         return -1;
    }
     return 0;
 }
-static int init_fifo(AVAudioFifo **fifo, AVCodecContext *codec_ctx)
+static int init_fifo(AVAudioFifo **fifo, AVCodecContext *codec_context)
 {
-    *fifo = av_audio_fifo_alloc(codec_ctx->sample_fmt, codec_ctx->channels, 1);
+    *fifo = av_audio_fifo_alloc(codec_context->sample_fmt, codec_context->channels, 1);
     if(*fifo == NULL) {
         myloge("alloc fifo fail");
         return -1;
     }
     return 0;
 }
-static int write_output_file_header(AVFormatContext * fmt_ctx)
+static int write_output_file_header(AVFormatContext * format_context)
 {
     int ret;
-    ret = avformat_write_header(fmt_ctx, NULL);
+    ret = avformat_write_header(format_context, NULL);
     if(ret < 0) {
         myloge("write header fail");
         return -1;
     }
     return 0;
 }
-
+static void init_packet(AVPacket *packet)
+{
+    av_init_packet(packet);
+    packet->data = NULL;
+    packet->size = 0;
+}
 static int decode_audio_frame(AVFrame * frame, 
     AVFormatContext * input_format_context, 
     AVCodecContext * input_codec_context, 
@@ -195,7 +203,7 @@ static int decode_audio_frame(AVFrame * frame,
     AVPacket input_packet;
     int ret;
     init_packet(&input_packet);
-    ret = av_read_frame(input_format_context, input_packet);
+    ret = av_read_frame(input_format_context, &input_packet);
     if(ret < 0) {
         if(ret == AVERROR_EOF) {
             *finished = 1;
@@ -204,7 +212,7 @@ static int decode_audio_frame(AVFrame * frame,
             return -1;
         }
     }
-    ret = avcodec_send_packet(input_codec_context, input_packet);
+    ret = avcodec_send_packet(input_codec_context, &input_packet);
     if(ret < 0) {
         myloge("can not send packet for decoding:%s", av_err2str(ret));
         return -1;
@@ -227,7 +235,7 @@ static int decode_audio_frame(AVFrame * frame,
     }
     
  cleanup:
-    av_packet_unref(input_packet);
+    av_packet_unref(&input_packet);
     return ret;
     
 }
@@ -337,6 +345,101 @@ static int write_output_file_trailer(AVFormatContext * output_format_context)
     }
     return 0;
 }
+static int init_output_frame(AVFrame **frame, AVCodecContext *output_codec_context, int frame_size)
+{
+    int ret;
+    *frame = av_frame_alloc();
+    if(!(*frame)) {
+        myloge("malloc frame fail");
+        return -1;
+    }
+    AVFrame *p = *frame;
+    p->nb_samples = frame_size;
+    p->channel_layout = output_codec_context->channel_layout;
+    p->format = output_codec_context->sample_fmt;
+    p->sample_rate = output_codec_context->sample_rate;
+
+    ret = av_frame_get_buffer(*frame, 0);
+    if(ret < 0) {
+        myloge("get buffer fail");
+        av_frame_free(frame);
+        return -1;
+    }
+    return 0;
+}
+
+static int encode_audio_frame(AVFrame * frame, 
+    AVFormatContext * output_format_context, 
+    AVCodecContext * output_codec_context,
+    int * data_present)
+{
+    AVPacket output_packet;
+    init_packet(&output_packet);
+    int ret;
+    if(frame) {
+        frame->pts = pts;
+        pts += frame->nb_samples;
+    }
+    ret = avcodec_send_frame(output_codec_context, frame);
+    if(ret == AVERROR_EOF) {
+        ret = 0;
+        goto cleanup;
+    } else if(ret < 0) {
+        myloge("send frame fail, %s", av_err2str(ret));
+        return ret;
+    }
+    ret = avcodec_receive_frame(output_codec_context, frame);
+    if(ret == AVERROR(EAGAIN)) {
+        ret = 0;
+        goto cleanup;
+    } else if(ret == AVERROR_EOF) {
+        ret = 0;
+        goto cleanup;
+    } else if(ret < 0) {
+        myloge("receive frame fail");
+        goto cleanup;
+    } else {
+        *data_present = 1;
+    }
+    ret = av_write_frame(output_format_context, &output_packet);
+    if((*data_present) && (ret < 0)) {
+        myloge("can not write frame");
+        goto cleanup;
+    }
+    
+cleanup: 
+    av_packet_unref(&output_packet);
+    return ret;
+}
+static int load_encode_and_write(AVAudioFifo * fifo, 
+    AVFormatContext * output_format_context, 
+    AVCodecContext * output_codec_context)
+{
+    AVFrame *output_frame;
+    int frame_size =   FFMIN(av_audio_fifo_size(fifo), output_codec_context->frame_size);
+    int data_written;
+    int ret;
+    ret = init_output_frame(&output_frame, output_codec_context, frame_size);
+    if(ret < 0) {
+        myloge("init output frame fail");
+        return -1;
+    }
+    ret = av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size);
+    if(ret < frame_size) {
+        myloge("can not read data from fifo");
+        av_frame_free(&output_frame);
+        return -1;
+    }
+    ret = encode_audio_frame(output_frame,  output_format_context, output_codec_context, &data_written);
+    if(ret < 0) {
+        av_frame_free(&output_frame);
+        return -1;
+    }
+    av_frame_free(&output_frame);
+    return 0;
+}
+
+
 int main(int argc, char **argv)
 {
     AVFormatContext *input_format_context = NULL, *output_format_context = NULL;
@@ -380,7 +483,7 @@ int main(int argc, char **argv)
             //读、解码、转换、存储四步一起。
             ret = read_decode_convert_and_store(fifo, input_format_context, input_codec_context, output_codec_context, resample_context, &finished);
             if(ret < 0) {
-                return cleanup;
+                goto cleanup;
             }
             if(finished) {
                 break;
