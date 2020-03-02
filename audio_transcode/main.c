@@ -18,51 +18,51 @@
 
 static int64_t pts;
 
-static int open_input_file(char *filename, AVFormatContext **input_fmt_context, AVCodecContext **input_codec_context)
+static int open_input_file(char *filename, AVFormatContext **input_format_context, AVCodecContext **input_codec_context)
 {
     int ret;
     AVCodec *codec;
     AVCodecContext *codec_context;
-    ret = avformat_open_input(input_fmt_context, filename, NULL, NULL);
+    ret = avformat_open_input(input_format_context, filename, NULL, NULL);
     if(ret) {
         myloge("open input fail");
         return -1;
     }
-    ret = avformat_find_stream_info(*input_fmt_context, NULL);
+    ret = avformat_find_stream_info(*input_format_context, NULL);
     if(ret) {
         myloge("find stream info fail");
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
-    if((*input_fmt_context)->nb_streams != 1) {
+    if((*input_format_context)->nb_streams != 1) {
         myloge("stream number is not 1");
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
-    codec = avcodec_find_decoder((*input_fmt_context)->streams[0]->codecpar->codec_id);
+    codec = avcodec_find_decoder((*input_format_context)->streams[0]->codecpar->codec_id);
     if(!codec) {
         myloge("can not find the code in ffmpeg");
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
     codec_context = avcodec_alloc_context3(codec);
     if(!codec_context) {
         myloge("alloc codec context fail");
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
-    ret = avcodec_parameters_to_context(codec_context, (*input_fmt_context)->streams[0]->codecpar);
+    ret = avcodec_parameters_to_context(codec_context, (*input_format_context)->streams[0]->codecpar);
     if(ret) {
         myloge("parameter to context fail");
         avcodec_free_context(&codec_context);
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
     ret = avcodec_open2(codec_context, codec, NULL);
     if(ret) {
         myloge("open codec fail");
         avcodec_free_context(codec_context);
-        avformat_close_input(input_fmt_context);
+        avformat_close_input(input_format_context);
         return -1;
     }
     *input_codec_context = codec_context;
