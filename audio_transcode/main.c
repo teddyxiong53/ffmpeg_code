@@ -71,7 +71,7 @@ static int open_input_file(char *filename, AVFormatContext **input_fmt_context, 
     return 0;
 }
 
-static int open_output_file(char *filename, AVCodecContext *input_codec_context, AVFormatContext **output_fmt_context, AVCodecContext **output_codec_fmt)
+static int open_output_file(char *filename, AVCodecContext *input_codec_context, AVFormatContext **output_format_context, AVCodecContext **output_codec_context)
 {
     int ret;
     AVIOContext *io_context;
@@ -91,6 +91,7 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_context,
         myloge("find outout format fail");
         goto err1;
     }
+    mylogd("guess output format:%s", format_context->oformat->name);
     format_context->url = av_strdup(filename);
     if(!format_context->url) {
         myloge("dup filename to url fail");
@@ -101,7 +102,7 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_context,
         myloge("find aac encoder fail");
         goto err1;
     }
-    AVStream *stream = avformat_new_stream(format_context, codec);
+    AVStream *stream = avformat_new_stream(format_context, NULL);//这里第二个为什么不能给codec呢？而要给NULL？
     if(!stream) {
         myloge("new stream fail");
         goto err1;
@@ -113,29 +114,31 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_context,
         
         goto err1;
     }
-    codec_context->channels = 1;
-    codec_context->channel_layout = av_get_default_channel_layout(1);
+    codec_context->channels = 2;//1;
+    codec_context->channel_layout = av_get_default_channel_layout(2);
     codec_context->sample_fmt = codec->sample_fmts[0];
     mylogd("sample fmt:%d\n", codec_context->sample_fmt);
     codec_context->sample_rate = input_codec_context->sample_rate;
     
-    codec_context->bit_rate = 32000;
-    stream->time_base.den = 16000;
+    codec_context->bit_rate = 96000;//32000;
+    codec_context->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+    stream->time_base.den = input_codec_context->sample_rate;;
     stream->time_base.num = 1;
-
+    if (format_context->oformat->flags & AVFMT_GLOBALHEADER)
+        codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     ret = avcodec_open2(codec_context, codec, NULL);
     if(ret) {
         myloge("open codec fail");
         goto err1;
     }
 
-    ret = avcodec_parameters_from_context(stream->codecpar, codec );
+    ret = avcodec_parameters_from_context(stream->codecpar, codec_context );//fixbug:
     if(ret)  {
         myloge("parameter fail");
         goto err1;
     }
-    *output_codec_fmt = codec_context;
-    *output_fmt_context = format_context;
+    *output_codec_context = codec_context;
+    *output_format_context = format_context;
     return 0;
 err1:
     avformat_free_context(format_context);
@@ -167,6 +170,7 @@ static int init_resampler(AVCodecContext * input_codec_context, AVCodecContext *
         swr_free(&context);
         return -1;
    }
+   *resample_context = context;
     return 0;
 }
 static int init_fifo(AVAudioFifo **fifo, AVCodecContext *codec_context)
@@ -290,8 +294,8 @@ static int read_decode_convert_and_store(AVAudioFifo * fifo,
     SwrContext * resampler_context, 
     int * finished)
 {
-    AVFrame *input_frame;
-    uint8_t **converted_input_samples;
+    AVFrame *input_frame = NULL;
+    uint8_t **converted_input_samples = NULL;
     
     input_frame = av_frame_alloc();
     if(input_frame == NULL) {
@@ -330,7 +334,7 @@ err1:
         av_freep(&converted_input_samples[0]);
         free(converted_input_samples);
     }
-    av_frame_free(input_frame);
+    av_frame_free(&input_frame);
     
     return ret;
 }
@@ -388,7 +392,7 @@ static int encode_audio_frame(AVFrame * frame,
         myloge("send frame fail, %s", av_err2str(ret));
         return ret;
     }
-    ret = avcodec_receive_frame(output_codec_context, frame);
+    ret = avcodec_receive_packet(output_codec_context, &output_packet);
     if(ret == AVERROR(EAGAIN)) {
         ret = 0;
         goto cleanup;
@@ -396,7 +400,7 @@ static int encode_audio_frame(AVFrame * frame,
         ret = 0;
         goto cleanup;
     } else if(ret < 0) {
-        myloge("receive frame fail");
+        myloge("receive frame fail, %s", av_err2str(ret));
         goto cleanup;
     } else {
         *data_present = 1;
@@ -446,7 +450,7 @@ int main(int argc, char **argv)
     AVCodecContext *input_codec_context= NULL, *output_codec_context= NULL;
     SwrContext *resample_context= NULL;
     AVAudioFifo *fifo = NULL;
-    
+    av_log_set_level(AV_LOG_DEBUG);
     if(argc < 3) {
         mylogd("usage:%s input_file output_file\n", argv[0]);
         return -1;
@@ -464,6 +468,7 @@ int main(int argc, char **argv)
         myloge("open output file fail");
         goto cleanup;
     }
+    mylogd("output_format_context:%d", output_format_context->streams[0]->codecpar->codec_id);
     ret = init_resampler(input_codec_context, output_codec_context, &resample_context);
     if(ret) {
         myloge("init resampler  fail");
@@ -475,7 +480,10 @@ int main(int argc, char **argv)
         goto cleanup;
     }        
     ret = write_output_file_header(output_format_context);
-
+    if(ret < 0) {
+        myloge("write output file header fail");
+        goto cleanup;
+    } 
     while(1) {
         int output_frame_size = output_codec_context->frame_size;
         int finished = 0;
