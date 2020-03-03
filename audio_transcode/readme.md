@@ -133,3 +133,21 @@ aac的frame size是1024个采样点。
 
 # 调试记录
 
+看看如何实现实时录音，同时往rtmp服务器传递。
+
+现在录音可以了。
+
+看看rtmp如何传递。
+
+感觉当前的main循环的逻辑，不能适应rtmp的传输。
+
+主循环，可以简化为read、write这2步。
+
+https://github.com/leixiaohua1020/simplest_ffmpeg_streamer/blob/master/simplest_ffmpeg_streamer/simplest_ffmpeg_streamer.cpp
+
+这个例子，是从flv到rtmp。
+
+解决编译错误，把示例的flv下载放到本地，rtmp路径修改一下。
+
+运行是可以的。
+

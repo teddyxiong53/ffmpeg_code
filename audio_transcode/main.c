@@ -94,6 +94,11 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_context,
 {
     int ret;
     AVIOContext *io_context;
+    int is_rtmp = 0;
+    if(strstr(filename, "rtmp") != NULL) {
+        mylogd("output is rtmp");
+        is_rtmp = 1;
+    }
     ret = avio_open(&io_context, filename, AVIO_FLAG_WRITE);
     if(ret) {
         myloge("avio open fail");
@@ -105,12 +110,21 @@ static int open_output_file(char *filename, AVCodecContext *input_codec_context,
         goto err0;
     }
     format_context->pb = io_context;
+    char *output_format_name = NULL;
+    if(!is_rtmp) {
+        
+    } else {
+        //rtmp，就不要猜格式了，直接指定为flv。
+        output_format_name = "flv";
+    }
+
     format_context->oformat = av_guess_format(NULL, filename, NULL);
     if(!format_context->oformat) {
         myloge("find outout format fail");
         goto err1;
     }
     mylogd("guess output format:%s", format_context->oformat->name);
+        
     format_context->url = av_strdup(filename);
     if(!format_context->url) {
         myloge("dup filename to url fail");
@@ -490,6 +504,7 @@ void ffmpeg_init()
     av_log_set_level(AV_LOG_DEBUG);
     av_register_all();
     avdevice_register_all();
+    avformat_network_init();
     signal(SIGINT, sighandler);
 }
 int main(int argc, char **argv)
