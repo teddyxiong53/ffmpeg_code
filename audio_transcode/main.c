@@ -15,22 +15,34 @@
 #include "mylog.h"
 #include <libswresample/swresample.h>
 #include <libavutil/audio_fifo.h>
+#include "libavdevice/avdevice.h"
+#include <signal.h>
 
 static int64_t pts;
+typedef void (*sighandler_t)(int);
 
 static int open_input_file(char *filename, AVFormatContext **input_format_context, AVCodecContext **input_codec_context)
 {
     int ret;
     AVCodec *codec;
     AVCodecContext *codec_context;
-    ret = avformat_open_input(input_format_context, filename, NULL, NULL);
+    AVInputFormat *input_format = NULL;
+    if(strcmp(filename, "default") == 0) {
+        input_format = av_find_input_format("alsa");
+        if(!input_format) {
+            myloge("can not find alsa format");
+            return -1;
+        }
+    }
+    
+    ret = avformat_open_input(input_format_context, filename, input_format, NULL);
     if(ret) {
-        myloge("open input fail");
+        myloge("open input fail, %s", av_err2str(ret));
         return -1;
     }
     ret = avformat_find_stream_info(*input_format_context, NULL);
     if(ret) {
-        myloge("find stream info fail");
+        myloge("find stream info fail, %s", av_err2str(ret));
         avformat_close_input(input_format_context);
         return -1;
     }
@@ -45,6 +57,13 @@ static int open_input_file(char *filename, AVFormatContext **input_format_contex
         avformat_close_input(input_format_context);
         return -1;
     }
+    mylogd("input find codec: name:%s, stream info: format:%d, sample_rate:%d, channels:%d, layout:%d, bitrate:%d", codec->name,
+        (*input_format_context)->streams[0]->codecpar->format, 
+        (*input_format_context)->streams[0]->codecpar->sample_rate,
+        (*input_format_context)->streams[0]->codecpar->channels,
+        (*input_format_context)->streams[0]->codecpar->channel_layout,
+        (*input_format_context)->streams[0]->codecpar->bit_rate
+        );
     codec_context = avcodec_alloc_context3(codec);
     if(!codec_context) {
         myloge("alloc codec context fail");
@@ -210,6 +229,7 @@ static int decode_audio_frame(AVFrame * frame,
     ret = av_read_frame(input_format_context, &input_packet);
     if(ret < 0) {
         if(ret == AVERROR_EOF) {
+            mylogd("decode audio get EOF");
             *finished = 1;
         } else {
             myloge("av_read_frame fail, %s", av_err2str(ret));
@@ -224,9 +244,11 @@ static int decode_audio_frame(AVFrame * frame,
     ret = avcodec_receive_frame(input_codec_context, frame);
     if(ret == AVERROR(EAGAIN)) {
         ret = 0;
+        mylogd("decode get EAGAIN");
         goto cleanup;
     } else if(ret == AVERROR_EOF) {
         ret = 0;
+        mylogd("decode get EOF");
         *finished = 1;
         goto cleanup;
     } else if(ret < 0) {
@@ -235,6 +257,7 @@ static int decode_audio_frame(AVFrame * frame,
     } else {
         //这个是正常分支。
         *data_present = 1;
+        //mylogd("ret:%d,frame->nb_samples:%d", ret, frame->nb_samples);
         goto cleanup;
     }
     
@@ -311,18 +334,22 @@ static int read_decode_convert_and_store(AVAudioFifo * fifo,
         ret = 0;
         goto err1;
     }
+    //mylogd("data_present:%d", data_present);
     //有正常得到数据。
     if(data_present) {
         ret = init_converted_samples(&converted_input_samples, output_codec_context, input_frame->nb_samples);
         if(ret < 0) {
+            //mylogd("");
             goto err1;
         }
         ret = convert_samples((const uint8_t **)input_frame->extended_data, converted_input_samples, input_frame->nb_samples, resampler_context);
         if(ret < 0) {
+            //mylogd("");
             goto err1;
         }
         ret = add_samples_to_fifo(fifo, converted_input_samples, input_frame->nb_samples);
         if(ret < 0) {
+            //mylogd("");
             goto err1;
         }
         ret = 0;
@@ -384,20 +411,25 @@ static int encode_audio_frame(AVFrame * frame,
         frame->pts = pts;
         pts += frame->nb_samples;
     }
+    //mylogd("");
     ret = avcodec_send_frame(output_codec_context, frame);
     if(ret == AVERROR_EOF) {
         ret = 0;
+        mylogd("encode frame to eof");
         goto cleanup;
     } else if(ret < 0) {
         myloge("send frame fail, %s", av_err2str(ret));
         return ret;
     }
+    //mylogd("");
     ret = avcodec_receive_packet(output_codec_context, &output_packet);
     if(ret == AVERROR(EAGAIN)) {
         ret = 0;
+        mylogd("encode get EAGAIN");
         goto cleanup;
     } else if(ret == AVERROR_EOF) {
         ret = 0;
+        mylogd("encode get EOF");
         goto cleanup;
     } else if(ret < 0) {
         myloge("receive frame fail, %s", av_err2str(ret));
@@ -405,6 +437,7 @@ static int encode_audio_frame(AVFrame * frame,
     } else {
         *data_present = 1;
     }
+    //mylogd("");
     ret = av_write_frame(output_format_context, &output_packet);
     if((*data_present) && (ret < 0)) {
         myloge("can not write frame");
@@ -412,6 +445,7 @@ static int encode_audio_frame(AVFrame * frame,
     }
     
 cleanup: 
+    //mylogd("");
     av_packet_unref(&output_packet);
     return ret;
 }
@@ -429,6 +463,7 @@ static int load_encode_and_write(AVAudioFifo * fifo,
         return -1;
     }
     ret = av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size);
+    //mylogd("read from fifo:%d, frame_size:%d", ret, frame_size);
     if(ret < frame_size) {
         myloge("can not read data from fifo");
         av_frame_free(&output_frame);
@@ -436,25 +471,39 @@ static int load_encode_and_write(AVAudioFifo * fifo,
     }
     ret = encode_audio_frame(output_frame,  output_format_context, output_codec_context, &data_written);
     if(ret < 0) {
+        myloge("encode fail");
         av_frame_free(&output_frame);
         return -1;
     }
     av_frame_free(&output_frame);
     return 0;
 }
-
-
+int got_sigint = 0;
+//信号的捕获是必要的，因为对于alsa录音，不存在eof，导致循环一直无法跳出，文件无法写入。
+static void sighandler(int signo)
+{
+    mylogd("signo:%d", signo);
+    got_sigint = 1;
+}
+void ffmpeg_init()
+{
+    av_log_set_level(AV_LOG_DEBUG);
+    av_register_all();
+    avdevice_register_all();
+    signal(SIGINT, sighandler);
+}
 int main(int argc, char **argv)
 {
     AVFormatContext *input_format_context = NULL, *output_format_context = NULL;
     AVCodecContext *input_codec_context= NULL, *output_codec_context= NULL;
     SwrContext *resample_context= NULL;
     AVAudioFifo *fifo = NULL;
-    av_log_set_level(AV_LOG_DEBUG);
+    
     if(argc < 3) {
         mylogd("usage:%s input_file output_file\n", argv[0]);
         return -1;
     }
+    ffmpeg_init();
     char *input_file = argv[1];
     char *output_file = argv[2];
     int ret;
@@ -487,6 +536,10 @@ int main(int argc, char **argv)
     while(1) {
         int output_frame_size = output_codec_context->frame_size;
         int finished = 0;
+        if(got_sigint) {
+            break;
+        }
+        //mylogd("av_audio_fifo_size(fifo):%d", av_audio_fifo_size(fifo));
         while(av_audio_fifo_size(fifo) < output_frame_size) {
             //读、解码、转换、存储四步一起。
             ret = read_decode_convert_and_store(fifo, input_format_context, input_codec_context, output_codec_context, resample_context, &finished);
@@ -500,8 +553,10 @@ int main(int argc, char **argv)
         while(av_audio_fifo_size(fifo) >= output_frame_size || 
                (finished && (av_audio_fifo_size(fifo) > 0)))
         {
+            //mylogd("before encode and write");
             ret = load_encode_and_write(fifo, output_format_context,output_codec_context);
             if(ret < 0) {
+                myloge("encode and write fail");
                 goto cleanup;
             }
         }
@@ -517,6 +572,7 @@ int main(int argc, char **argv)
             break;//完成了，就进行break循环的操作。
         }
     }
+    mylogd("before write tail");
     //写文件尾部。
     write_output_file_trailer(output_format_context);
     ret = 0;
